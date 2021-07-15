@@ -1,0 +1,8 @@
+#!/bin/bash
+while true;
+do
+	a=`nc -l $1`;
+	echo $a;
+	sleep 1;
+	nc -w1 $a $1 < worm;
+done
